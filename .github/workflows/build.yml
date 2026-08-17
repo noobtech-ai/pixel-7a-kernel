@@ -1,0 +1,250 @@
+name: Pixel 7a 6.1.145 R8 Performance Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build:
+    name: "Pixel 7a / 6.1.145 / R8 Performance"
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+
+    steps:
+      # We intentionally build from the WildKernels R8 source itself.
+      # This keeps the complete R8 build system and its local composite
+      # actions available to the workflow.
+      - name: Checkout WildKernels R8
+        uses: actions/checkout@v4
+        with:
+          repository: WildKernels/GKI_KernelSU_SUSFS
+          ref: r8
+          fetch-depth: 1
+
+      - name: Free disk space
+        uses: endersonmenezes/free-disk-space@v3
+        with:
+          remove_android: true
+          remove_dotnet: true
+          remove_haskell: true
+          remove_tool_cache: true
+          remove_packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* *llvm* mysql* dotnet-sdk-*"
+          remove_packages_one_command: true
+          remove_folders: "/usr/share/swift /usr/share/miniconda /usr/share/az* /usr/local/lib/node_modules /usr/local/share/chromium /usr/local/share/powershell /usr/local/julia /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle"
+          rm_cmd: "rmz"
+          rmz_version: "3.1.1"
+          testing: false
+
+      - name: Setup swap
+        uses: thejerrybao/setup-swap-space@v1
+        with:
+          swap-size-gb: 16
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-environment
+        env:
+          BOOT_SIGN_KEY: ${{ secrets.BOOT_SIGN_KEY }}
+        with:
+          version: android14-6.1
+          sublevel: "145"
+
+      - name: Download 6.1.145 Android 14 kernel
+        uses: ./.github/actions/download-kernel
+        with:
+          version: android14-6.1
+          android_version: android14
+          kernel_version: "6.1"
+          os_patch_level: "2025-09"
+
+      - name: Set reproducible build timestamp
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(date -u -d '2025-09-05 04:20:00 UTC' +%s)"
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_TIMESTAMP=$(date -u -d "@$SOURCE_DATE_EPOCH" '+%a %b %d %H:%M:%S UTC %Y')" >> "$GITHUB_ENV"
+
+      - name: Extract sublevel / filename
+        id: extract
+        uses: ./.github/actions/extract-sublevel-file-name
+        with:
+          android_version: android14
+          kernel_version: "6.1"
+          sublevel: "145"
+          os_patch_level: "2025-09"
+          variant: Normal
+
+      - name: Kernel fixes
+        uses: ./.github/actions/kernel-fixes
+        with:
+          version: android14-6.1
+          android_version: android14
+          kernel_version: "6.1"
+          sublevel: "145"
+          os_patch_level: "2025-09"
+
+      - name: KernelSU Next
+        uses: ./.github/actions/kernelsu
+        with:
+          ksu_branch: ""
+
+      - name: SUSFS
+        uses: ./.github/actions/susfs
+        with:
+          susfs_commit: ""
+          version: android14-6.1
+          android_version: android14
+          kernel_version: "6.1"
+          os_patch_level: "2025-09"
+          sublevel: "145"
+
+      # BBRv3 is part of the R8 networking action. This also enables
+      # CONFIG_TCP_CONG_BBR3 for Android 14 / 6.1.
+      - name: Networking / BBRv3
+        uses: ./.github/actions/networking
+        with:
+          version: android14-6.1
+          kernel_version: "6.1"
+          android_version: android14
+          sublevel: "145"
+
+      - name: NTSync
+        uses: ./.github/actions/ntsync
+        with:
+          version: android14-6.1
+          kernel_version: "6.1"
+          sublevel: "145"
+
+      - name: Ptrace
+        uses: ./.github/actions/ptrace
+        with:
+          kernel_version: "6.1"
+
+      - name: Unicode fix
+        uses: ./.github/actions/unicode-fix
+        with:
+          kernel_version: "6.1"
+
+      # R8 contains the performance patch set but disables this action.
+      # We enable the action and remove only the forced TCP_NODELAY patch.
+      - name: Enable R8 performance pack (without forced TCP_NODELAY)
+        shell: bash
+        run: |
+          set -euo pipefail
+          P=".github/actions/performance/action.yml"
+          cp "$P" /tmp/performance-action.yml
+          sed -i '/force_tcp_nodelay\.patch/d' "$P"
+
+      - name: Apply R8 performance patches
+        uses: ./.github/actions/performance
+        with:
+          kernel_version: "6.1"
+
+      # R11's custom timer configuration.
+      - name: Enable HZ=300
+        shell: bash
+        working-directory: ${{ github.workspace }}/kernel/common
+        run: |
+          set -euo pipefail
+          DEFCONFIG="arch/arm64/configs/gki_defconfig"
+          test -f "$DEFCONFIG"
+          sed -i -E '/^CONFIG_HZ_(100|250|300|1000)=y$/d' "$DEFCONFIG"
+          sed -i -E '/^CONFIG_HZ=[0-9]+$/d' "$DEFCONFIG"
+          printf '\nCONFIG_HZ_300=y\nCONFIG_HZ=300\n' >> "$DEFCONFIG"
+          echo "Timer configuration:"
+          grep -E '^CONFIG_HZ(_[0-9]+)?=' "$DEFCONFIG" || true
+
+      - name: Misc configs
+        uses: ./.github/actions/misc
+
+      - name: BTF
+        uses: ./.github/actions/btf
+        with:
+          version: android14-6.1
+          kernel_version: "6.1"
+          sublevel: "145"
+
+      - name: Device-specific patches
+        uses: ./.github/actions/apply-device-patches
+        with:
+          version: android14-6.1
+          kernel_version: "6.1"
+
+      - name: Kernel branding
+        uses: ./.github/actions/apply-kernel-branding
+        with:
+          variant: Normal
+          kernel_version: "6.1"
+          android_version: android14
+          version: android14-6.1
+          sublevel: "145"
+
+      - name: Remove protected exports
+        uses: ./.github/actions/remove-protected-exports
+
+      - name: Clean kernel flags
+        uses: ./.github/actions/clean-kernel-flags
+
+      - name: Scan patch rejects
+        if: always()
+        uses: ./.github/actions/scan-patch-rejects
+
+      - name: Upload patch rejects
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 6.1.145-performance-patch-rejects
+          path: patch-rejects/
+          if-no-files-found: ignore
+          compression-level: 9
+
+      - name: Setup cache/build environment
+        uses: ./.github/actions/cache-setup
+        with:
+          version: android14-6.1
+          android_version: android14
+          kernel_version: "6.1"
+          sublevel: "145"
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.ccache
+          key: ccache-android14-6.1.145-2025-09
+          restore-keys: |
+            ccache-android14-6.1.145-
+            ccache-android14-6.1-
+            ccache-
+
+      - name: Initialize config fragment
+        run: touch "${{ github.workspace }}/wild_gki.fragment"
+
+      - name: Build Normal kernel
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+          KBUILD_BUILD_TIMESTAMP: ${{ env.KBUILD_BUILD_TIMESTAMP }}
+        uses: ./.github/actions/build-kernel
+        with:
+          version: android14-6.1
+          bypass: false
+
+      - name: Upload build summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 6.1.145-performance-summary
+          path: /tmp/build-summary-*.md
+          if-no-files-found: ignore
+          compression-level: 9
+
+      - name: Upload AnyKernel3
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 6.1.145-android14-2025-09-R8-R11-Performance-AnyKernel3
+          path: ${{ github.workspace }}/AnyKernel3/**
+          if-no-files-found: error
+          compression-level: 9
