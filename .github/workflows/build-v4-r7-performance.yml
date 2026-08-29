@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   build:
-    name: R7 6.1.145 + V1 Performance (No NoMount)
+    name: R7 6.1.145 - V1 Performance - No NoMount
     runs-on: ubuntu-latest
     timeout-minutes: 180
 
@@ -35,7 +35,7 @@ jobs:
           rmz_version: 3.1.1
           testing: false
 
-      -       - name: Setup swap
+      - name: Setup swap
         shell: bash
         run: |
           set -euo pipefail
@@ -64,7 +64,7 @@ jobs:
           kernel_version: "6.1"
           os_patch_level: "2025-09"
 
-      - name: Extract sublevel / filename
+      - name: Extract sublevel and filename
         uses: ./.github/actions/extract-sublevel-file-name
         with:
           android_version: android14
@@ -91,20 +91,33 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           cp -a .github/actions/susfs .github/actions/susfs-r7-fixed
+
           python3 - <<'PY'
           from pathlib import Path
+
           p = Path(".github/actions/susfs-r7-fixed/action.yml")
           s = p.read_text()
+
           start = s.find('        COMMIT1="')
           end_marker = '        git cherry-pick "$COMMIT2"'
           end = s.find(end_marker)
+
           if start == -1 or end == -1:
-              raise SystemExit("Expected obsolete R7 SUSFS cherry-pick block was not found")
+              raise SystemExit(
+                  "Expected obsolete R7 SUSFS cherry-pick block was not found"
+              )
+
           end += len(end_marker)
           p.write_text(s[:start] + s[end:])
           PY
-          ! grep -q '8d2420be13e43d4cc0d80215d08ed475081a1404' .github/actions/susfs-r7-fixed/action.yml
+
+          if grep -q '8d2420be13e43d4cc0d80215d08ed475081a1404' \
+              .github/actions/susfs-r7-fixed/action.yml; then
+              echo "Obsolete SUSFS commit remains"
+              exit 1
+          fi
 
       - name: SUSFS
         uses: ./.github/actions/susfs-r7-fixed
@@ -116,9 +129,7 @@ jobs:
           os_patch_level: "2025-09"
           sublevel: "145"
 
-      # Deliberately NO Hookless NoMount and NO PathHide/Cloak in V4.
-
-      - name: Networking / BBRv3
+      - name: Networking and BBRv3
         uses: ./.github/actions/networking
         with:
           version: android14-6.1
@@ -142,29 +153,45 @@ jobs:
         with:
           kernel_version: "6.1"
 
-      - name: Remove forced TCP_NODELAY
+      - name: Remove forced TCP NODELAY
         shell: bash
         run: |
           set -euo pipefail
+
           P=".github/actions/performance/action.yml"
+
           test -f "$P"
+
           sed -i '/force_tcp_nodelay\.patch/d' "$P"
-          ! grep -q 'force_tcp_nodelay\.patch' "$P"
+
+          if grep -q 'force_tcp_nodelay\.patch' "$P"; then
+              echo "TCP_NODELAY patch is still present"
+              exit 1
+          fi
 
       - name: V1 Performance Pack
         uses: ./.github/actions/performance
         with:
           kernel_version: "6.1"
 
-      - name: Enable HZ=300
+      - name: Enable HZ 300
         shell: bash
         working-directory: ${{ github.workspace }}/kernel/common
         run: |
           set -euo pipefail
+
           DEFCONFIG="arch/arm64/configs/gki_defconfig"
+
           test -f "$DEFCONFIG"
-          sed -i -E '/^CONFIG_HZ_(100|250|300|1000)=y$/d' "$DEFCONFIG"
-          sed -i -E '/^CONFIG_HZ=[0-9]+$/d' "$DEFCONFIG"
+
+          sed -i -E \
+            '/^CONFIG_HZ_(100|250|300|1000)=y$/d' \
+            "$DEFCONFIG"
+
+          sed -i -E \
+            '/^CONFIG_HZ=[0-9]+$/d' \
+            "$DEFCONFIG"
+
           printf '\nCONFIG_HZ_300=y\nCONFIG_HZ=300\n' >> "$DEFCONFIG"
 
       - name: Misc configs
@@ -204,7 +231,7 @@ jobs:
           if-no-files-found: ignore
           compression-level: 9
 
-      - name: Setup cache/build environment
+      - name: Setup cache and build environment
         uses: ./.github/actions/cache-setup
         with:
           version: android14-6.1
