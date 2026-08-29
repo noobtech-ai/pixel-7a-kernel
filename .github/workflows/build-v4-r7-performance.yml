@@ -35,10 +35,18 @@ jobs:
           rmz_version: 3.1.1
           testing: false
 
-      - name: Setup swap
-        uses: thejerrybao/setup-swap-space@v1
-        with:
-          swap-size-gb: 16
+      -       - name: Setup swap
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo swapoff -a || true
+          sudo rm -f /swapfile
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+          swapon --show
 
       - name: Setup build environment
         uses: ./.github/actions/setup-build-environment
