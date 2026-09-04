@@ -1,0 +1,302 @@
+name: Pixel 7a V5 - R8 6.1.145 + V1 Performance + SUSFS 2.3.0 + MaxSteel NoMount 2.0.0
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build:
+    name: R8 6.1.145 / V1 Performance / SUSFS 2.3.0 / NoMount 2.0.0
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout WildKernels R8
+        uses: actions/checkout@v4
+        with:
+          repository: WildKernels/GKI_KernelSU_SUSFS
+          ref: r8
+          fetch-depth: 1
+
+      - name: Free disk space
+        uses: endersonmenezes/free-disk-space@v3
+        with:
+          remove_android: true
+          remove_dotnet: true
+          remove_haskell: true
+          remove_tool_cache: true
+          remove_packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* *llvm* mysql* dotnet-sdk-*"
+          remove_packages_one_command: true
+          testing: false
+
+      - name: Setup swap
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo swapoff -a || true
+          sudo rm -f /swapfile
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+          swapon --show
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-environment
+        env:
+          BOOT_SIGN_KEY: ${{ secrets.BOOT_SIGN_KEY }}
+        with:
+          version: android14-6.1
+          sublevel: "145"
+
+      - name: Download 6.1.145 Android 14 kernel
+        uses: ./.github/actions/download-kernel
+        with:
+          version: android14-6.1
+          android_version: android14
+          kernel_version: "6.1"
+          os_patch_level: "2025-09"
+
+      - name: Extract sublevel / filename
+        uses: ./.github/actions/extract-sublevel-file-name
+        with:
+          android_version: android14
+          kernel_version: "6.1"
+          sublevel: "145"
+          os_patch_level: "2025-09"
+          variant: Normal
+
+      - name: Kernel fixes
+        uses: ./.github/actions/kernel-fixes
+        with:
+          version: android14-6.1
+          android_version: android14
+          kernel_version: "6.1"
+          sublevel: "145"
+          os_patch_level: "2025-09"
+
+      - name: KernelSU Next - latest WildKernels dev-susfs base
+        uses: ./.github/actions/kernelsu
+        with:
+          ksu_branch: ""
+
+      # R8's SUSFS action normally derives the stable branch
+      # gki-android14-6.1. V5 deliberately switches that local action
+      # to the current development branch, which currently reports
+      # SUSFS v2.3.0 in ksu_module_susfs/module.prop.
+      - name: Switch WildKernels SUSFS action to official v2.3.0 development branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          A=".github/actions/susfs-setup/action.yml"
+          test -f "$A"
+
+          sed -i 's/SUSFS_BRANCH="gki-${{ inputs.version }}"/SUSFS_BRANCH="gki-${{ inputs.version }}-dev"/' "$A"
+
+          grep -q 'SUSFS_BRANCH="gki-${{ inputs.version }}-dev"' "$A"
+
+      - name: SUSFS 2.3.0
+        uses: ./.github/actions/susfs
+        with:
+          susfs_commit: ""
+          version: android14-6.1
+          android_version: android14
+          kernel_version: "6.1"
+          os_patch_level: "2025-09"
+          sublevel: "145"
+
+      - name: Verify SUSFS 2.3.0 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f susfs4ksu/ksu_module_susfs/module.prop
+          grep -q '^version=v2.3.0$' susfs4ksu/ksu_module_susfs/module.prop
+          echo "SUSFS module version:"
+          grep '^version=' susfs4ksu/ksu_module_susfs/module.prop
+          echo "SUSFS kernel patch:"
+          test -f susfs4ksu/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch
+
+      - name: Integrate MaxSteel NoMount v2.0.0
+        shell: bash
+        working-directory: ${{ github.workspace }}/kernel
+        run: |
+          set -euo pipefail
+
+          curl -fsSL \
+            https://raw.githubusercontent.com/maxsteeel/nomount/refs/tags/v2.0.0/kernel/setup.sh \
+            -o /tmp/nomount-setup.sh
+
+          chmod +x /tmp/nomount-setup.sh
+          /tmp/nomount-setup.sh v2.0.0
+
+          test -L common/fs/nomount
+          test -f common/fs/nomount/Kconfig
+          test -f common/fs/nomount/Makefile
+
+          echo "NoMount integration:"
+          readlink -f common/fs/nomount
+
+      - name: Enable NoMount built-in
+        uses: ./.github/actions/set-kernel-config
+        with:
+          config_list: |
+            CONFIG_NOMOUNT=y
+
+      - name: Networking / BBRv3
+        uses: ./.github/actions/networking
+        with:
+          version: android14-6.1
+          kernel_version: "6.1"
+          android_version: android14
+          sublevel: "145"
+
+      - name: NTSync
+        uses: ./.github/actions/ntsync
+        with:
+          version: android14-6.1
+          kernel_version: "6.1"
+
+      - name: Ptrace
+        uses: ./.github/actions/ptrace
+        with:
+          kernel_version: "6.1"
+
+      - name: Unicode fix
+        uses: ./.github/actions/unicode-fix
+        with:
+          kernel_version: "6.1"
+
+      # Keep the V1 behavior: the forced TCP_NODELAY patch is intentionally excluded.
+      - name: Remove forced TCP_NODELAY from V1 performance action
+        shell: bash
+        run: |
+          set -euo pipefail
+          P=".github/actions/performance/action.yml"
+          test -f "$P"
+          sed -i '/force_tcp_nodelay\.patch/d' "$P"
+          ! grep -q 'force_tcp_nodelay\.patch' "$P"
+
+      - name: V1 Performance Pack
+        uses: ./.github/actions/performance
+        with:
+          kernel_version: "6.1"
+
+      - name: Enable HZ=300
+        shell: bash
+        working-directory: ${{ github.workspace }}/kernel/common
+        run: |
+          set -euo pipefail
+          DEFCONFIG="arch/arm64/configs/gki_defconfig"
+          test -f "$DEFCONFIG"
+
+          sed -i -E '/^CONFIG_HZ_(100|250|300|1000)=y$/d' "$DEFCONFIG"
+          sed -i -E '/^CONFIG_HZ=[0-9]+$/d' "$DEFCONFIG"
+
+          printf '\nCONFIG_HZ_300=y\nCONFIG_HZ=300\n' >> "$DEFCONFIG"
+
+      - name: Misc configs
+        uses: ./.github/actions/misc
+
+      - name: Device-specific patches
+        uses: ./.github/actions/apply-device-patches
+        with:
+          version: android14-6.1
+          kernel_version: "6.1"
+
+      - name: Kernel branding
+        uses: ./.github/actions/apply-kernel-branding
+        with:
+          variant: Normal
+          kernel_version: "6.1"
+          android_version: android14
+          version: android14-6.1
+          sublevel: "145"
+
+      - name: Remove protected exports
+        uses: ./.github/actions/remove-protected-exports
+
+      - name: Clean kernel flags
+        uses: ./.github/actions/clean-kernel-flags
+
+      - name: Scan patch rejects
+        if: always()
+        uses: ./.github/actions/scan-patch-rejects
+
+      - name: Upload patch rejects
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 6.1.145-R8-V5-patch-rejects
+          path: patch-rejects/
+          if-no-files-found: ignore
+          compression-level: 9
+
+      # The official SUSFS README says to build the userspace tool first,
+      # then package the module.
+      - name: Setup Android NDK for SUSFS module
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install "ndk;27.2.12479018"
+          NDK_HOME="${ANDROID_SDK_ROOT}/ndk/27.2.12479018"
+          test -x "${NDK_HOME}/ndk-build"
+          echo "${NDK_HOME}" >> "$GITHUB_PATH"
+
+      - name: Build SUSFS 2.3.0 userspace tool and module
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd susfs4ksu
+
+          chmod +x build_ksu_susfs_tool.sh build_ksu_module.sh
+
+          ./build_ksu_susfs_tool.sh
+          test -x ksu_module_susfs/tools/ksu_susfs_arm64
+
+          ./build_ksu_module.sh
+          test -f ksu_module_susfs.zip
+
+      - name: Setup cache / build environment
+        uses: ./.github/actions/cache-setup
+        with:
+          version: android14-6.1
+          android_version: android14
+          kernel_version: "6.1"
+          sublevel: "145"
+
+      - name: Initialize config fragment
+        run: touch "${{ github.workspace }}/wild_gki.fragment"
+
+      - name: Build Normal kernel
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+          KBUILD_BUILD_TIMESTAMP: ${{ env.KBUILD_BUILD_TIMESTAMP }}
+        uses: ./.github/actions/build-kernel
+        with:
+          version: android14-6.1
+          bypass: false
+
+      - name: Upload AnyKernel3
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 6.1.145-android14-2025-09-R8-V5-Performance-SUSFS230-NoMount200-AnyKernel3
+          path: ${{ github.workspace }}/AnyKernel3/**
+          if-no-files-found: error
+          compression-level: 9
+
+      - name: Upload matching SUSFS 2.3.0 module
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: SUSFS-2.3.0-matching-module
+          path: ${{ github.workspace }}/susfs4ksu/ksu_module_susfs.zip
+          if-no-files-found: error
+          compression-level: 9
