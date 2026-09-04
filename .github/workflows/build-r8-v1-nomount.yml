@@ -1,0 +1,250 @@
+name: R8 6.1.145 - V1 Performance + MaxSteel NoMount
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  build:
+    name: R8 6.1.145 + V1 Performance + NoMount
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout WildKernels R8
+        uses: actions/checkout@v7
+        with:
+          repository: WildKernels/GKI_KernelSU_SUSFS
+          ref: r8
+          fetch-depth: 1
+
+      - name: Free disk space
+        uses: endersonmenezes/free-disk-space@v3
+        with:
+          remove_android: true
+          remove_dotnet: true
+          remove_haskell: true
+          remove_tool_cache: true
+          remove_packages_one_command: true
+          remove_packages: "azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-* *llvm* mysql* dotnet-sdk-*"
+          remove_folders: "/usr/share/swift /usr/share/miniconda /usr/share/az* /usr/local/lib/node_modules /usr/local/share/chromium /usr/local/share/powershell /usr/local/julia /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle"
+          rm_cmd: rmz
+          rmz_version: 3.1.1
+          testing: false
+
+      - name: Setup 16 GB swap
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo swapoff -a || true
+          sudo rm -f /swapfile
+          sudo fallocate -l 16G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
+
+      - name: Setup build environment
+        uses: ./.github/actions/setup-build-environment
+        with:
+          version: android14-6.1
+          sublevel: "145"
+        env:
+          BOOT_SIGN_KEY: ${{ secrets.BOOT_SIGN_KEY }}
+
+      - name: Download 6.1.145 Android 14 kernel
+        uses: ./.github/actions/download-kernel
+        with:
+          version: android14-6.1
+          android_version: android14
+          kernel_version: "6.1"
+          os_patch_level: "2025-09"
+
+      - name: Set build timestamp
+        shell: bash
+        run: |
+          set -euo pipefail
+          d="2025-09-05 04:20:00 UTC"
+          e="$(date -u -d "$d" +%s)"
+          echo "SOURCE_DATE_EPOCH=$e" >> "$GITHUB_ENV"
+          echo "KBUILD_BUILD_TIMESTAMP=$(date -u -d "@$e" '+%a %b %d %H:%M:%S UTC %Y')" >> "$GITHUB_ENV"
+
+      - name: Extract sublevel and filename
+        id: extract
+        uses: ./.github/actions/extract-sublevel-file-name
+        with:
+          android_version: android14
+          kernel_version: "6.1"
+          sublevel: "145"
+          os_patch_level: "2025-09"
+          variant: Normal
+
+      - name: Kernel fixes
+        uses: ./.github/actions/kernel-fixes
+        with:
+          version: android14-6.1
+          android_version: android14
+          kernel_version: "6.1"
+          sublevel: "145"
+          os_patch_level: "2025-09"
+
+      - name: KernelSU Next
+        uses: ./.github/actions/kernelsu
+        with:
+          ksu_branch: ""
+
+      - name: SUSFS - use R8 default SUSFS
+        uses: ./.github/actions/susfs
+        with:
+          susfs_commit: ""
+          version: android14-6.1
+          android_version: android14
+          kernel_version: "6.1"
+          os_patch_level: "2025-09"
+          sublevel: "145"
+
+      - name: Networking and BBRv3
+        uses: ./.github/actions/networking
+        with:
+          version: android14-6.1
+          kernel_version: "6.1"
+          android_version: android14
+          sublevel: "145"
+
+      - name: NTSync
+        uses: ./.github/actions/ntsync
+        with:
+          version: android14-6.1
+          kernel_version: "6.1"
+          sublevel: "145"
+
+      - name: Ptrace
+        uses: ./.github/actions/ptrace
+        with:
+          kernel_version: "6.1"
+
+      - name: Unicode fix
+        uses: ./.github/actions/unicode-fix
+        with:
+          kernel_version: "6.1"
+
+      # This is the V1 Performance Pack.
+      # We call the original R8 performance action directly.
+      # R8's normal build workflow currently has this action disabled,
+      # so this workflow intentionally enables it.
+      - name: V1 Performance Pack
+        uses: ./.github/actions/performance
+        with:
+          kernel_version: "6.1"
+
+      # MaxSteel NoMount v2.0.0
+      # The official setup script accepts a tag/commit and adds the
+      # fs/nomount symlink plus the Kconfig/Makefile integration.
+      - name: Integrate MaxSteel NoMount v2.0.0
+        shell: bash
+        working-directory: kernel
+        run: |
+          set -euo pipefail
+
+          curl -fsSL \
+            https://raw.githubusercontent.com/maxsteeel/nomount/refs/tags/v2.0.0/kernel/setup.sh \
+            -o /tmp/nomount-setup.sh
+
+          chmod +x /tmp/nomount-setup.sh
+          /tmp/nomount-setup.sh v2.0.0
+
+          test -L common/fs/nomount || test -L fs/nomount
+          echo "NoMount v2.0.0 integration completed."
+
+      - name: Enable NoMount in kernel config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FRAGMENT="${GITHUB_WORKSPACE}/wild_gki.fragment"
+          printf '%s\n' 'CONFIG_NOMOUNT=y' >> "$FRAGMENT"
+
+          echo "CONFIG_NOMOUNT=y" >> "${GITHUB_WORKSPACE}/kernel/common/arch/arm64/configs/gki_defconfig"
+
+      - name: Misc configs
+        uses: ./.github/actions/misc
+
+      - name: BTF
+        uses: ./.github/actions/btf
+        with:
+          version: android14-6.1
+          kernel_version: "6.1"
+          sublevel: "145"
+
+      - name: Device-specific patches
+        uses: ./.github/actions/apply-device-patches
+        with:
+          version: android14-6.1
+          kernel_version: "6.1"
+
+      - name: Kernel branding
+        uses: ./.github/actions/apply-kernel-branding
+        with:
+          variant: Normal
+          kernel_version: "6.1"
+          android_version: android14
+          version: android14-6.1
+          sublevel: "145"
+
+      - name: Remove protected exports
+        uses: ./.github/actions/remove-protected-exports
+
+      - name: Clean kernel flags
+        uses: ./.github/actions/clean-kernel-flags
+
+      - name: Scan patch rejects
+        if: always()
+        uses: ./.github/actions/scan-patch-rejects
+
+      - name: Upload rejects
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: R8-V1-NoMount-Rejects
+          path: patch-rejects/
+          if-no-files-found: ignore
+
+      - name: Setup cache and build environment
+        uses: ./.github/actions/cache-setup
+        with:
+          version: android14-6.1
+          android_version: android14
+          kernel_version: "6.1"
+          sublevel: "145"
+
+      - name: Initialize config fragment
+        run: |
+          touch "${GITHUB_WORKSPACE}/wild_gki.fragment"
+
+      - name: Verify NoMount config
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q '^CONFIG_NOMOUNT=y$' "${GITHUB_WORKSPACE}/wild_gki.fragment"
+          echo "NoMount config fragment is present."
+
+      - name: Build Normal kernel
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+          KBUILD_BUILD_TIMESTAMP: ${{ env.KBUILD_BUILD_TIMESTAMP }}
+        uses: ./.github/actions/build-kernel
+        with:
+          version: android14-6.1
+          bypass: false
+
+      - name: Upload AnyKernel3
+        if: success()
+        uses: actions/upload-artifact@v7
+        with:
+          name: R8-6.1.145-V1-Performance-MaxSteel-NoMount-v2.0.0-AnyKernel3
+          path: ${{ github.workspace }}/AnyKernel3/**
+          if-no-files-found: error
+          compression-level: 9
