@@ -1,0 +1,167 @@
+```yaml
+name: 6.1.162 V1 Performance 300Hz
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+
+  resolve:
+    name: Resolve exact build sources
+    runs-on: ubuntu-latest
+
+    outputs:
+      nomount: ${{ steps.sources.outputs.nomount }}
+      ksunext: ${{ steps.sources.outputs.ksunext }}
+      susfs: ${{ steps.sources.outputs.susfs }}
+      kernel_patches: ${{ steps.sources.outputs.kernel_patches }}
+      anykernel3: ${{ steps.sources.outputs.anykernel3 }}
+      droidspaces: ${{ steps.sources.outputs.droidspaces }}
+
+    steps:
+      - name: Resolve sources
+        id: sources
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "============================================"
+          echo "  6.1.162 V1 PERFORMANCE BUILD"
+          echo "============================================"
+          echo "Base:        765ec36"
+          echo "Kernel:      6.1.162"
+          echo "Android:     14"
+          echo "Patch:       2026-03"
+          echo "Performance: ENABLED"
+          echo "HZ:          300"
+          echo "SUSFS:       ENABLED"
+          echo "NoMount:     ENABLED"
+          echo "BBG:         ENABLED"
+          echo "NET:         ENABLED"
+          echo "============================================"
+
+          retry() {
+            local n=0
+            until [ "$n" -ge 5 ]; do
+              "$@" && return 0
+              n=$((n+1))
+              echo "Retry $n/5..."
+              sleep 5
+            done
+            return 1
+          }
+
+          resolve_sha() {
+            retry git ls-remote "$1" "$2" | awk '{print $1; exit}'
+          }
+
+          # Exact NoMount pin used by the 765ec36 verified build.
+          NOMOUNT="d0f57d5c37ff02aae2299daded57919153240cb3"
+
+          # KernelSU-Next SUSFS integration.
+          #
+          # This is the KernelSU-Next commit used by the linked
+          # 765ec36 build.
+          KSUNEXT="35d62a012394894517c9e4b9c62a23adcdc412c8"
+
+          # Android 14 / 6.1 SUSFS pin at this revision.
+          SUSFS="4fc9c1898ea66f51847cdbc0d1473ea4ef525a70"
+
+          # Resolve the helper repositories from their normal build branches.
+          KERNEL_PATCHES="$(resolve_sha \
+            https://github.com/WildKernels/kernel_patches.git \
+            refs/heads/main)"
+
+          ANYKERNEL3="$(resolve_sha \
+            https://github.com/WildKernels/AnyKernel3.git \
+            refs/heads/gki-2.0)"
+
+          DROIDSPACES="$(resolve_sha \
+            https://github.com/ravindu644/Droidspaces-OSS.git \
+            refs/heads/main)"
+
+          echo "nomount=$NOMOUNT" >> "$GITHUB_OUTPUT"
+          echo "ksunext=$KSUNEXT" >> "$GITHUB_OUTPUT"
+          echo "susfs=$SUSFS" >> "$GITHUB_OUTPUT"
+          echo "kernel_patches=$KERNEL_PATCHES" >> "$GITHUB_OUTPUT"
+          echo "anykernel3=$ANYKERNEL3" >> "$GITHUB_OUTPUT"
+          echo "droidspaces=$DROIDSPACES" >> "$GITHUB_OUTPUT"
+
+          echo ""
+          echo "Resolved sources:"
+          echo "NoMount:       $NOMOUNT"
+          echo "KernelSU-Next: $KSUNEXT"
+          echo "SUSFS:         $SUSFS"
+          echo "Kernel patches:$KERNEL_PATCHES"
+          echo "AnyKernel3:    $ANYKERNEL3"
+          echo "DroidSpaces:   $DROIDSPACES"
+
+
+  build:
+    name: Build 6.1.162 V1 Performance
+    needs: resolve
+
+    uses: ./.github/workflows/build.yml
+
+    with:
+      # ----------------------------------------------------------
+      # ACTUAL KERNEL TARGET
+      # ----------------------------------------------------------
+      version: android14-6.1
+      android_version: android14
+      kernel_version: 6.1
+      sublevel: "162"
+      os_patch_level: "2026-03"
+
+      # Normal build variant.
+      variant: Normal
+
+      # ----------------------------------------------------------
+      # V1 PERFORMANCE PACK
+      # ----------------------------------------------------------
+      #
+      # The upstream build system's Perf feature enables the
+      # performance patch set. This is intentionally NOT manually
+      # recreated with random source edits.
+      #
+      # V1 includes the 300 Hz configuration.
+      #
+      feature_set: SUSFS+NoMount+BBG+NET+DS+NTSync+Ptrace+Unicode+BPF+Perf
+
+      # ----------------------------------------------------------
+      # KERNELSU-NEXT
+      # ----------------------------------------------------------
+      ksu_branch: 35d62a012394894517c9e4b9c62a23adcdc412c8
+      root_flavor: next
+      root_commit: 35d62a012394894517c9e4b9c62a23adcdc412c8
+
+      # ----------------------------------------------------------
+      # SUSFS
+      # ----------------------------------------------------------
+      susfs_commit: 4fc9c1898ea66f51847cdbc0d1473ea4ef525a70
+
+      # ----------------------------------------------------------
+      # NOMOUNT
+      # ----------------------------------------------------------
+      nomount_commit: d0f57d5c37ff02aae2299daded57919153240cb3
+
+      # ----------------------------------------------------------
+      # BUILD HELPERS
+      # ----------------------------------------------------------
+      kernel_patches_commit: ${{ needs.resolve.outputs.kernel_patches }}
+      anykernel3_commit: ${{ needs.resolve.outputs.anykernel3 }}
+      droidspaces_commit: ${{ needs.resolve.outputs.droidspaces }}
+
+      # ----------------------------------------------------------
+      # BUILD OPTIONS
+      # ----------------------------------------------------------
+      brand_name: V1-Perf-300Hz
+      bypass: false
+      use_cache: true
+
+    secrets: inherit
+```
